@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Three.js Cube Example</title>
+	<style>
+		body { margin: 0; overflow: hidden; }
+		canvas { display: block; }
+	</style>
+</head>
+<body>
+	<!-- Use Three.js r111 and compatible GLTFLoader -->
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/build/three.min.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/loaders/GLTFLoader.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/loaders/DRACOLoader.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/controls/OrbitControls.js"></script>
+	<!-- Postprocessing scripts -->
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/postprocessing/EffectComposer.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/postprocessing/RenderPass.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/postprocessing/ShaderPass.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/shaders/CopyShader.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/shaders/FXAAShader.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/three@0.111.0/examples/js/shaders/VignetteShader.js"></script>
+	<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.18.2/dist/lil-gui.umd.min.js"></script>
+	<script>
+		// Scene setup
+		var scene = new THREE.Scene();
+		var camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+		var renderer = new THREE.WebGLRenderer({ antialias: true });
+		renderer.setSize(window.innerWidth, window.innerHeight);
+		renderer.setPixelRatio(window.devicePixelRatio);
+		document.body.appendChild(renderer.domElement);
+
+		// Create background shader plane (far back in the scene)
+		var bgGeometry = new THREE.PlaneGeometry(200, 200);
+		var bgMaterial = new THREE.ShaderMaterial({
+			uniforms: {
+				iTime: { value: 0 },
+				iResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+			},
+			vertexShader: `
+				varying vec2 vUv;
+				void main() {
+					vUv = uv;
+					gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+				}
+			`,
+			fragmentShader: `
+				uniform float iTime;
+				uniform vec2 iResolution;
+				varying vec2 vUv;
+
+				float orb(vec3 p) {
+					float t = iTime * 4.0;
+					return length(p - vec3(
+							sin(sin(t*0.2)+t*0.4) * 6.0,
+							1.0+sin(sin(t*0.5)+t*0.2) * 4.0,
+							12.0+iTime+cos(t*0.3)*8.0));
+				}
+
+				void main() {
+					vec4 o = vec4(0.0);
+					vec2 fragCoord = vUv * iResolution;
+					vec2 u = fragCoord;
+					vec3 p = vec3(iResolution, 0.0);
+					
+					float d = 0.0;
+					float a, e, s, t;
+					t = iTime;
+					
+					// scale coords
+					u = (u+u-p.xy)/p.y;
+					
+					// camera movement
+					u += vec2(cos(t*0.1)*0.3, cos(t*0.3)*0.1);
+					
+					for(float i = 0.0; i < 64.0; i++) {
+						// march
+						p = vec3(u*d, d+t);
+						
+						// entity (orb)
+						e = orb(p) - 0.1;
+						
+						// spin by t, twist by p.z
+						float angle = 0.1*t + p.z/8.0;
+						mat2 rot = mat2(cos(angle), sin(angle), -sin(angle), cos(angle));
+						p.xy = rot * p.xy;
+						
+						// mirrored planes 4 units apart
+						s = 4.0 - abs(p.y);
+						
+						// noise loop
+						for(a = 0.8; a < 32.0; a += a) {
+							// apply turbulence
+							p += cos(0.7*t + p.yzx) * 0.2;
+							
+							// apply noise
+							s -= abs(dot(sin(0.1*t + p * a), vec3(0.6) + p - p)) / a;
+						}
+						
+						// accumulate distance
+						s = min(0.03 + 0.2*abs(s), e = max(0.5*e, 0.01));
+						d += s;
+						
+						// grayscale color and orb light
+						o += vec4(1.0/(s + e*3.0));
+					}
+					
+					// tanh tonemap, brightness
+					o = tanh(o/10.0);
+					
+					gl_FragColor = vec4(o.rgb, 1.0);
+				}
+			`,
+			side: THREE.DoubleSide
+		});
+		
+		var bgMesh = new THREE.Mesh(bgGeometry, bgMaterial);
+		bgMesh.position.z = -50; // Position far behind the model
+		scene.add(bgMesh); // Add to main scene instead of separate scene
+
+		// Setup post-processing pipeline
+		var composer = new THREE.EffectComposer(renderer);
+		var renderPass = new THREE.RenderPass(scene, camera);
+		composer.addPass(renderPass);
+
+		// Add vignette effect for atmospheric depth
+		var vignettePass = new THREE.ShaderPass(THREE.VignetteShader);
+		vignettePass.uniforms['offset'].value = 0.9;
+		vignettePass.uniforms['darkness'].value = 1.6;
+		composer.addPass(vignettePass);
+
+		// Add FXAA for anti-aliasing
+		var fxaaPass = new THREE.ShaderPass(THREE.FXAAShader);
+		fxaaPass.uniforms['resolution'].value.set(1 / window.innerWidth, 1 / window.innerHeight);
+		composer.addPass(fxaaPass);
+
+		// Handle window resize
+		window.addEventListener('resize', function() {
+			camera.aspect = window.innerWidth / window.innerHeight;
+			camera.updateProjectionMatrix();
+			renderer.setSize(window.innerWidth, window.innerHeight);
+			composer.setSize(window.innerWidth, window.innerHeight);
+			fxaaPass.uniforms['resolution'].value.set(1 / window.innerWidth, 1 / window.innerHeight);
+			bgMaterial.uniforms.iResolution.value.set(window.innerWidth, window.innerHeight);
+		});
+
+		// Add ambient light
+		var ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+		scene.add(ambientLight);
+
+		// Add directional light for better depth
+		var directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+		directionalLight.position.set(5, 10, 7.5);
+		scene.add(directionalLight);
+
+		// Add point light for accent
+		var pointLight = new THREE.PointLight(0x00aaff, 1, 100);
+		pointLight.position.set(0, 5, 5);
+		scene.add(pointLight);
+
+
+
+		// Camera mouse move effect
+		var mouseX = 0;
+		var mouseY = 0;
+		var targetX = 0;
+		var targetY = 0;
+		var windowHalfX = window.innerWidth / 2;
+		var windowHalfY = window.innerHeight / 2;
+
+		document.addEventListener('mousemove', function(event) {
+			mouseX = (event.clientX - windowHalfX) / windowHalfX;
+			mouseY = (event.clientY - windowHalfY) / windowHalfY;
+		});
+
+		// Zoom in/out on click
+		var isZoomedIn = false;
+		var originalDistance = 10;
+		var zoomedDistance = 3;
+
+		document.addEventListener('click', function(event) {
+			// Ignore clicks on the canvas for orbit controls
+			if (event.target === renderer.domElement) {
+				isZoomedIn = !isZoomedIn;
+				var targetDistance = isZoomedIn ? guiParams.zoomedDistance : guiParams.originalDistance;
+				
+				// Get current distance from target
+				var target = controls.target;
+				var startDistance = camera.position.distanceTo(target);
+				var duration = 1000; // 1 second
+				var startTime = Date.now();
+				
+				// Store the start position and direction vector
+				var startPos = camera.position.clone();
+				var direction = new THREE.Vector3().subVectors(camera.position, target).normalize();
+				
+				function animateZoom() {
+					var elapsed = Date.now() - startTime;
+					var progress = Math.min(elapsed / duration, 1);
+					// Ease in-out function
+					var easeProgress = progress < 0.5 
+						? 2 * progress * progress 
+						: -1 + (4 - 2 * progress) * progress;
+					
+					var currentDistance = startDistance + (targetDistance - startDistance) * easeProgress;
+					// Recalculate direction each frame to maintain proper direction
+					direction.subVectors(startPos, target).normalize();
+					camera.position.copy(target).add(direction.clone().multiplyScalar(currentDistance));
+					
+					if (progress < 1) {
+						requestAnimationFrame(animateZoom);
+					}
+				}
+				animateZoom();
+			}
+		});
+
+        var controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+
+		// GUI Controls
+		var gui = new lil.GUI();
+		
+		var guiParams = {
+			// Lighting
+			ambientIntensity: 0,
+			directionalIntensity: 1.188,
+			pointLightIntensity: 3,
+			pointLightColor: '#787b87',
+			// Camera
+			mouseMoveEffect: true,
+			mouseSensitivity: 0.918,
+			// Zoom
+			zoomedDistance: 5,
+			originalDistance: 10,
+			// Material
+			emissiveColor: '#000000',
+			emissiveIntensity: 2,
+			roughness: 1,
+			metalness: 0,
+			// Post-processing
+			vignetteOffset: 0.9,
+			vignetteDarkness: 1.6
+		};
+
+		// No bloom postprocessing controls
+
+		// Post-processing folder
+		var postFolder = gui.addFolder('Post-Processing');
+		postFolder.add(guiParams, 'vignetteOffset', 0, 2).name('Vignette Offset').onChange(function(value) {
+			vignettePass.uniforms['offset'].value = value;
+		});
+		postFolder.add(guiParams, 'vignetteDarkness', 0, 3).name('Vignette Darkness').onChange(function(value) {
+			vignettePass.uniforms['darkness'].value = value;
+		});
+		postFolder.open();
+
+		// Lighting folder
+		var lightingFolder = gui.addFolder('Lighting');
+		lightingFolder.add(guiParams, 'ambientIntensity', 0, 2).onChange(function(value) {
+			ambientLight.intensity = value;
+		});
+		lightingFolder.add(guiParams, 'directionalIntensity', 0, 2).onChange(function(value) {
+			directionalLight.intensity = value;
+		});
+		lightingFolder.add(guiParams, 'pointLightIntensity', 0, 3).onChange(function(value) {
+			pointLight.intensity = value;
+		});
+		lightingFolder.addColor(guiParams, 'pointLightColor').onChange(function(value) {
+			pointLight.color.set(value);
+		});
+		lightingFolder.open();
+
+		// Camera folder
+		var cameraFolder = gui.addFolder('Camera');
+		cameraFolder.add(guiParams, 'mouseMoveEffect').name('Mouse Move Effect');
+		cameraFolder.add(guiParams, 'mouseSensitivity', 0, 2).name('Mouse Sensitivity');
+		cameraFolder.add(guiParams, 'zoomedDistance', 1, 10).name('Zoom In Distance');
+		cameraFolder.add(guiParams, 'originalDistance', 5, 20).name('Zoom Out Distance');
+
+		// Material folder
+		var materialFolder = gui.addFolder('Material Emissive');
+		materialFolder.addColor(guiParams, 'emissiveColor').name('Emissive Color').onChange(function(value) {
+			scene.traverse(function(child) {
+				if (child.isMesh && child.material && child.material.name !== 'TV' && child.material.emissive) {
+					child.material.emissive.set(value);
+				}
+			});
+		});
+		materialFolder.add(guiParams, 'emissiveIntensity', 0, 2).onChange(function(value) {
+			scene.traverse(function(child) {
+				if (child.isMesh && child.material && child.material.name !== 'TV' && child.material.emissiveIntensity !== undefined) {
+					child.material.emissiveIntensity = value;
+				}
+			});
+		});
+		materialFolder.add(guiParams, 'roughness', 0, 1).onChange(function(value) {
+			scene.traverse(function(child) {
+				if (child.isMesh && child.material && child.material.name !== 'TV' && child.material.roughness !== undefined) {
+					child.material.roughness = value;
+				}
+			});
+		});
+		materialFolder.add(guiParams, 'metalness', 0, 1).onChange(function(value) {
+			scene.traverse(function(child) {
+				if (child.isMesh && child.material && child.material.name !== 'TV' && child.material.metalness !== undefined) {
+					child.material.metalness = value;
+				}
+			});
+		});
+
+		// Create video element and texture
+		var video = document.createElement('video');
+		video.src = 'z.mp4'; // Replace with your video file path
+		video.loop = true;
+		video.muted = true;
+		video.crossOrigin = 'anonymous';
+		video.setAttribute('playsinline', '');
+		
+		video.addEventListener('loadeddata', function() {
+			console.log('Video loaded successfully');
+		});
+		
+		video.addEventListener('error', function(e) {
+			console.error('Video failed to load:', e);
+		});
+		
+		// Play video with user interaction fallback
+		var playPromise = video.play();
+		if (playPromise !== undefined) {
+			playPromise.catch(function(error) {
+				console.log('Autoplay prevented, waiting for user interaction');
+				document.addEventListener('click', function() {
+					video.play();
+				}, { once: true });
+			});
+		}
+		
+		var videoTexture = new THREE.VideoTexture(video);
+		videoTexture.minFilter = THREE.LinearFilter;
+		videoTexture.magFilter = THREE.LinearFilter;
+		videoTexture.format = THREE.RGBFormat;
+		videoTexture.flipY = false; // Fix video orientation
+
+		// Setup DRACOLoader for compressed models
+		var dracoLoader = new THREE.DRACOLoader();
+		dracoLoader.setDecoderPath('https://www.gstatic.com/draco/v1/decoders/');
+
+		// Load GLB model
+		var loader = new THREE.GLTFLoader();
+		loader.setDRACOLoader(dracoLoader);
+		loader.load('untitled2.glb', function(gltf) {
+			var model = gltf.scene;
+			scene.add(model);
+			
+			// Find and replace material on defaultMaterial_2
+			model.traverse(function(child) {
+				if (child.isMesh && child.material) {
+					if (child.material.name === 'TV' ) {
+						// TV: video material, no bloom
+						child.material = new THREE.MeshBasicMaterial({
+							map: videoTexture,
+							side: THREE.DoubleSide
+						});
+					} else {
+						// Other: strong emissive for fake bloom
+						if (child.material.type === 'MeshStandardMaterial' || child.material.type === 'MeshBasicMaterial') {
+							var oldMaterial = child.material;
+							child.material = new THREE.MeshStandardMaterial({
+								color: oldMaterial.color || new THREE.Color(0xffffff),
+								map: oldMaterial.map,
+								emissive: new THREE.Color(guiParams.emissiveColor),
+								emissiveIntensity: guiParams.emissiveIntensity,
+								roughness: guiParams.roughness,
+								metalness: guiParams.metalness
+							});
+						}
+					}
+				}
+			});
+			
+			// Optionally center and scale the model
+			model.position.set(0, 0, 0);
+            model.scale.set(1, 1, 1);
+			camera.position.set(0, 1, 10);
+		}, undefined, function(error) {
+			console.error('An error happened loading the model:', error);
+		});
+
+		// Animation loop
+		function animate() {
+			requestAnimationFrame(animate);
+            
+			// Update shader time
+			bgMaterial.uniforms.iTime.value = performance.now() * 0.001;
+			
+			if (guiParams.mouseMoveEffect) {
+				targetX = mouseX * guiParams.mouseSensitivity;
+				targetY = mouseY * guiParams.mouseSensitivity;
+				camera.position.x += (targetX - camera.position.x) * 0.05;
+				camera.position.y += (1 + targetY - camera.position.y) * 0.05;
+				camera.lookAt(scene.position);
+			}
+			controls.update();
+			
+			// Render with post-processing (background is now part of main scene)
+			composer.render();
+		}
+		animate();
+	</script>
+</body>
+</html>
